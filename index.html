@@ -207,6 +207,7 @@ details[open] > summary{margin-bottom:10px}
       <button type="button" class="pri" id="installBtn" hidden>바탕화면에 설치</button>
       <button type="button" id="fileBtn" hidden>파일로 내려받기</button>
       <button type="button" id="copyUrl">웹사이트 주소 복사</button>
+      <button type="button" id="icoBtn" hidden>아이콘 그림 내려받기</button>
       <span class="status" id="deskStatus"></span>
     </div>
     <div class="muted" id="deskHow"></div>
@@ -1350,6 +1351,7 @@ function paintDesk(){
   $("deskBtn").hidden = !ONLINE || STANDALONE;
   $("installBtn").hidden = !installEvt;
   $("fileBtn").hidden = !ONLINE;
+  $("icoBtn").hidden = !ONLINE;
   $("deskHow").textContent = STANDALONE ? "바탕화면 앱으로 열려 있습니다."
     : !ONLINE ? "바탕화면에서 쓰려면 웹사이트 주소(" + SITE + ")를 엣지나 크롬으로 열고 이 칸의 ‘바탕화면에 설치’를 누르세요."
     : (installEvt ? "‘바탕화면에 설치’를 누르면 바탕화면에 아이콘이 생기고, 주소창 없는 창으로 열립니다. 기록과 새 기능은 이 웹사이트와 같습니다."
@@ -1374,6 +1376,14 @@ $("fileBtn").addEventListener("click", async () => {
   } catch (e) { $("deskStatus").textContent = "파일을 만들지 못했습니다. 인터넷 연결을 확인해 주세요."; $("deskStatus").className = "status err"; }
 });
 $("copyUrl").addEventListener("click", () => copyText(SITE, $("deskStatus"), "주소를 복사했습니다: " + SITE));
+/* 바탕화면 바로가기용 아이콘(.ico). 바로가기 속성 → 아이콘 변경에서 고름 */
+$("icoBtn").addEventListener("click", async () => {
+  try {
+    const res = await fetch("bokmu.ico", {cache:"no-store"}); if (!res.ok) throw 0;
+    await saveFile("복무상황부.ico", await res.blob(), "image/x-icon", $("deskStatus"));
+    $("deskStatus").textContent = "‘복무상황부.ico’를 내려받았습니다. 이 파일을 ‘문서’ 폴더처럼 지우지 않을 곳에 옮겨 두고, 바로가기 오른쪽 클릭 → 속성 → 아이콘 변경 → 찾아보기에서 고르세요.";
+  } catch (e) { $("deskStatus").textContent = "아이콘 파일을 받지 못했습니다. 인터넷 연결을 확인해 주세요."; $("deskStatus").className = "status err"; }
+});
 paintDesk();
 
 paintSet();
