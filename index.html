@@ -245,6 +245,10 @@ details[open] > summary{margin-bottom:10px}
       <label class="f">관찰일지 결재란 (쉼표로 구분)<input type="text" id="s_obsSign"></label>
     </div>
     <div class="row">
+      <label class="f">관찰일지 병가 기본 사유<input type="text" id="s_obsSick"></label>
+      <label class="f" style="flex:2 1 280px">관찰일지 공가 기본 특이사항<input type="text" id="s_obsDuty"></label>
+    </div>
+    <div class="row">
       <label class="row muted"><input type="checkbox" id="s_sp"> 특별휴가를 연가일수에 넣기</label>
       <label class="row muted"><input type="checkbox" id="s_join"> 연가·병가도 이어진 날은 한 줄로</label>
     </div>
@@ -302,16 +306,20 @@ const uid = () => "p" + Date.now().toString(36) + Math.random().toString(36).sli
 /* ---------- 저장 ---------- */
 /* 관찰일지 작성자 기본값(2026-11-27 사용자 요청 "작성자는 기본적으로 장민석으로 넣고 수정도 가능하게") */
 const DEFAULT_WRITER = "장민석";
+/* 관찰일지 기본값(2026-11-27 사용자 요청): 기관명 "새희망둥지", 병가 사유 "병원진료", 공가 특이사항 "교통사고로 인해 병원 진료받으며 회복중" */
+const DEFAULT_ORG = "새희망둥지", DEFAULT_SICK = "병원진료", DEFAULT_DUTY = "교통사고로 인해 병원 진료받으며 회복중";
 function blank(){
-  return {v:1, set:{org:"",field:"",type:"주간",place:"",sign:"담당,사무국장,원장",att:"양호",reason:"개인사유",sp:true,join:false,writer:DEFAULT_WRITER,writerSet:true,obsSign:"담당자,사무국장,원장"}, people:[], months:{}, obs:{}, ui:{}};
+  return {v:1, set:{org:DEFAULT_ORG,orgSet:true,field:"",type:"주간",place:"",sign:"담당,사무국장,원장",att:"양호",reason:"개인사유",sp:true,join:false,writer:DEFAULT_WRITER,writerSet:true,obsSign:"담당자,사무국장,원장",obsSick:DEFAULT_SICK,obsDuty:DEFAULT_DUTY}, people:[], months:{}, obs:{}, ui:{}};
 }
 function norm(d){
   const b = blank();
   if (!d || typeof d !== "object") return b;
-  const writerSet = !!(d.set && d.set.writerSet);
+  const writerSet = !!(d.set && d.set.writerSet), orgSet = !!(d.set && d.set.orgSet);
   d.set = Object.assign(b.set, d.set || {});
   /* 작성자 기본값이 생기기 전 기록: 비어 있으면 한 번만 기본값으로 채움(나중에 사용자가 지우면 그대로 둠) */
   if (!writerSet) { if (!d.set.writer) d.set.writer = DEFAULT_WRITER; d.set.writerSet = true; }
+  /* 기관명(복무기관) 기본값이 생기기 전 기록: 비어 있으면 한 번만 "새희망둥지"로 채움(나중에 지우면 그대로) */
+  if (!orgSet) { if (!d.set.org) d.set.org = DEFAULT_ORG; d.set.orgSet = true; }
   d.people = Array.isArray(d.people) ? d.people.filter(p => p && p.id) : [];
   d.months = d.months && typeof d.months === "object" ? d.months : {};
   d.ui = d.ui && typeof d.ui === "object" ? d.ui : {};
@@ -494,6 +502,7 @@ function paintSet(){
   $("s_org").value = s.org; $("s_field").value = s.field; $("s_type").value = s.type; $("s_place").value = s.place;
   $("s_sign").value = s.sign; $("s_att").value = s.att; $("s_reason").value = s.reason; $("s_sp").checked = !!s.sp; $("s_join").checked = !!s.join;
   $("s_writer").value = s.writer || ""; $("s_obsSign").value = s.obsSign || "";
+  $("s_obsSick").value = s.obsSick || ""; $("s_obsDuty").value = s.obsDuty || "";
 }
 function paint(){
   if (cur.pid && !person(cur.pid)) cur.pid = "";
@@ -572,7 +581,7 @@ $("printAll").addEventListener("click", () => saveForms(db.people, $("allStatus"
 /* 기본값 */
 [["s_org","org"],["s_field","field"],["s_type","type"],["s_place","place"],["s_sign","sign"],["s_att","att"],["s_reason","reason"]].forEach(([id, k]) => $(id).addEventListener("input", e => { db.set[k] = e.target.value; save(); paintPerson(); if (k === "org") paintObs(); }));
 $("s_sp").addEventListener("change", e => { db.set.sp = e.target.checked; paint(); });
-[["s_writer","writer"],["s_obsSign","obsSign"]].forEach(([id, k]) => $(id).addEventListener("input", e => { db.set[k] = e.target.value; save(); paintObs(); }));
+[["s_writer","writer"],["s_obsSign","obsSign"],["s_obsSick","obsSick"],["s_obsDuty","obsDuty"]].forEach(([id, k]) => $(id).addEventListener("input", e => { db.set[k] = e.target.value; save(); paintObs(); }));
 $("s_join").addEventListener("change", e => { db.set.join = e.target.checked; paint(); });
 
 async function copyText(txt, statusEl, okMsg){
@@ -709,7 +718,11 @@ function obsDefault(p, iso){
   if (leave) {
     let reason = "";
     if (code !== "휴일") { const row = rowsOf(ym, p.id).find(x => x.code === code && d >= x.s && d <= x.e); if (row && row.reason && row.reason !== leave && row.reason !== KIND[code]) reason = row.reason; }
-    return {code, dept: OBS_DEPT[code] || (p.dept || ""), tin:"-", tout:"-", work: leave, note: code === "휴일" ? "" : code === "결근" ? "- 무단결근" + (reason ? " (" + reason + ")" : "") : "- " + (reason ? reason + ro(reason) + " " : "") + leave + (code === "교육" ? " 참석" : " 사용")};
+    /* 병가는 사유가 따로 없으면 설정의 병가 기본 사유("병원진료"), 공가(공무상병가)는 설정의 공가 문구를 그대로 */
+    if (code === "병가" && !reason) reason = db.set.obsSick || "";
+    let note = code === "휴일" ? "" : code === "결근" ? "- 무단결근" + (reason ? " (" + reason + ")" : "") : "- " + (reason ? reason + ro(reason) + " " : "") + leave + (code === "교육" ? " 참석" : " 사용");
+    if (code === "공병") note = "- " + (reason || db.set.obsDuty || "공가 사용");
+    return {code, dept: OBS_DEPT[code] || (p.dept || ""), tin:"-", tout:"-", work: leave, note};
   }
   return {code, dept: p.dept || "", tin: p.tin || "", tout: p.tout || "", work: p.work || "", note: OBS_PART[code] ? "- " + OBS_PART[code] : "- 특이사항 없음"};
 }
@@ -1051,8 +1064,10 @@ $("obsHwpx").addEventListener("click", async () => {
   try {
     st.textContent = "한글 파일을 만드는 중…"; st.className = "status";
     const blob = await obsHwpx(list);
-    await saveFile("관찰일지_" + y + "년" + m + "월.hwpx", blob, "application/hwp+zip", st);
-    if (!/err/.test(st.className)) st.textContent = y + "년 " + m + "월 평일 " + list.length + "쪽을 한글 파일(관찰일지_" + y + "년" + m + "월.hwpx)로 내려받았습니다.";
+    /* 파일 이름(2026-11-27 사용자 요청): "사회복무요원 일일 관찰일지(11월).hwpx" */
+    const fname = "사회복무요원 일일 관찰일지(" + m + "월).hwpx";
+    await saveFile(fname, blob, "application/hwp+zip", st);
+    if (!/err/.test(st.className)) st.textContent = y + "년 " + m + "월 평일 " + list.length + "쪽을 한글 파일 ‘" + fname + "’로 내려받았습니다.";
   } catch (e) { st.textContent = "한글 파일을 만들지 못했습니다."; st.className = "status err"; }
 });
 let obsPrevT = 0;
