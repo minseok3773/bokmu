@@ -139,6 +139,7 @@ table.obs input,table.obs textarea{border:0;border-radius:0;background:transpare
 table.obs textarea{text-align:left;min-height:52px;resize:vertical;display:block;line-height:1.45}
 table.obs input:focus,table.obs textarea:focus{outline:2px solid var(--accent);outline-offset:-2px;background:var(--panel)}
 table.obs tr.off td{opacity:.45}
+table.obs input[readonly]{color:var(--muted);cursor:not-allowed}
 table.obs td.sk{text-align:center}
 .obs-info{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));border:1px solid var(--form-line);min-width:900px}
 .obs-info > *{border-right:1px solid var(--form-line);display:flex;align-items:center;justify-content:center;min-height:38px;font-size:14px}
@@ -707,11 +708,26 @@ function obsDefault(p, iso){
   }
   return {code, dept: p.dept || "", tin: p.tin || "", tout: p.tout || "", work: p.work || "", note: OBS_PART[code] ? "- " + OBS_PART[code] : "- 특이사항 없음"};
 }
+/* 연가·병가·공가·특휴·교육·결근인 날은 출근·퇴근을 언제나 "-"로 (2026-11-27 사용자 요청 "공가나 병가는 출퇴근시간을 -", "연가도", "교육도").
+   달력이 휴가이거나, 관찰일지 근무내용·배치부서에 휴가 이름을 적었을 때 모두 해당 */
+function obsLeaveCode(v){
+  const t = String(v || "").replace(/\s/g, "");
+  if (!t) return null;
+  if (t === "연가") return "연가";
+  if (t === "병가" || t === "일반병가") return "병가";
+  if (t === "공가" || t === "공무상병가" || t === "병가(공무)") return "공병";
+  if (t === "특휴" || t === "특별휴가") return "특휴";
+  if (t === "결근" || t === "무단결근") return "결근";
+  if (/교육$/.test(t)) return "교육";
+  return null;
+}
 function obsRow(p, iso){
   const base = obsDefault(p, iso), day = obsDayRec(iso), o = (day && day.rows[p.id]) || {};
   const ov = (o.by && o.by[obsGrp(base.code)]) || {};
   const out = Object.assign({}, base);
   ["dept","tin","tout","work","note"].forEach(k => { if (ov[k] != null) out[k] = ov[k]; });
+  out.lock = (!!OBS_LEAVE[base.code] && base.code !== "휴일") || !!obsLeaveCode(out.work) || !!obsLeaveCode(out.dept);
+  if (out.lock) { out.tin = "-"; out.tout = "-"; }
   out.skip = !!o.skip;
   return out;
 }
@@ -765,8 +781,8 @@ function paintObs(){
       '<td class="c">' + (r.skip ? "" : ++n) + '</td>' +
       '<td class="nm">' + esc(p.name) + tag + '</td>' +
       '<td><input type="text" data-o="dept" value="' + esc(r.dept) + '" aria-label="배치부서"></td>' +
-      '<td><input type="text" data-o="tin" inputmode="numeric" value="' + esc(r.tin) + '" placeholder="00:00" aria-label="출근 시간"></td>' +
-      '<td><input type="text" data-o="tout" inputmode="numeric" value="' + esc(r.tout) + '" placeholder="00:00" aria-label="퇴근 시간"></td>' +
+      '<td><input type="text" data-o="tin" inputmode="numeric" value="' + esc(r.tin) + '" placeholder="00:00" aria-label="출근 시간"' + (r.lock ? LOCK_ATTR : "") + '></td>' +
+      '<td><input type="text" data-o="tout" inputmode="numeric" value="' + esc(r.tout) + '" placeholder="00:00" aria-label="퇴근 시간"' + (r.lock ? LOCK_ATTR : "") + '></td>' +
       '<td><input type="text" data-o="work" value="' + esc(r.work) + '" aria-label="근무내용"></td>' +
       '<td><textarea data-o="note" rows="2" aria-label="특이사항 및 관찰내용">' + esc(r.note) + '</textarea></td>' +
       '<td class="sk"><input type="checkbox" data-o="skip"' + (r.skip ? "" : " checked") + ' aria-label="' + esc(p.name) + ' 인쇄에 넣기" style="width:auto"></td></tr>';
@@ -795,14 +811,40 @@ function obsSet(pid, k, v){
 $("obsTable").addEventListener("input", e => {
   const t = e.target, tr = t.closest("tr[data-pid]"); if (!tr || !t.dataset.o || t.type === "checkbox") return;
   obsSet(tr.dataset.pid, t.dataset.o, t.value);
+  if (t.dataset.o === "work" || t.dataset.o === "dept") obsRefreshTimes(tr);
 });
+const LOCK_ATTR = ' readonly title="휴가인 날은 출근·퇴근을 ‘-’로 둡니다"';
+/* 근무내용·배치부서를 고치면 그 줄의 시간 칸만 바로 바꿈(표 전체를 다시 그리지 않아 쓰던 칸이 그대로) */
+function obsRefreshTimes(tr){
+  const p = person(tr.dataset.pid); if (!p) return;
+  const r = obsRow(p, obsIso);
+  ["tin","tout"].forEach(k => {
+    const el = tr.querySelector('[data-o="' + k + '"]'); if (!el) return;
+    el.value = r[k]; el.readOnly = r.lock;
+    if (r.lock) el.title = "휴가인 날은 출근·퇴근을 ‘-’로 둡니다"; else el.removeAttribute("title");
+  });
+}
+/* 관찰일지에 휴가 이름을 적었는데 달력과 다르면 달력에도 넣을지 묻는 단추 */
+function obsCalHint(p, v){
+  const code = obsLeaveCode(v), base = obsDefault(p, obsIso);
+  if (!code || base.code === code) return;
+  /* 같은 안내가 이미 있으면 그대로 둠(단추를 누르는 순간 칸에서 빠져나오며 다시 그려져 단추가 사라지지 않게) */
+  const old = $("obsToCal"); if (old && old.dataset.pid === p.id && old.dataset.code === code) return;
+  const [, m, d] = obsIso.split("-").map(Number);
+  const now = OBS_LEAVE[base.code] || (OBS_WORK.has(base.code) ? "출근" : base.code);
+  const name = code === "공병" ? "공무상병가" : (CODES.find(c => c[0] === code) || [code, code])[1];
+  $("obsStatus").innerHTML = esc(p.name) + " 님 " + m + "월 " + d + "일 달력은 ‘" + esc(now) + "’입니다. " +
+    '<button type="button" class="sm" id="obsToCal" data-pid="' + p.id + '" data-code="' + code + '">달력에도 ' + esc(name) + ro(name) + " 넣기</button>";
+  $("obsStatus").className = "status";
+}
 $("obsTable").addEventListener("change", e => {
   const t = e.target, tr = t.closest("tr[data-pid]"); if (!tr || !t.dataset.o) return;
   if (t.type === "checkbox") { obsSet(tr.dataset.pid, "skip", !t.checked); paintObs(); return; }
+  if (t.dataset.o === "work" || t.dataset.o === "dept") { obsRefreshTimes(tr); const p0 = person(tr.dataset.pid); if (p0) obsCalHint(p0, t.value); }
   if (t.dataset.o === "tin" || t.dataset.o === "tout") { const v = normTime(t.value); if (v !== t.value) { t.value = v; obsSet(tr.dataset.pid, t.dataset.o, v); } }
   /* 배치부서·근무내용은 요원 기본값이 비어 있으면 처음 쓴 값을 기본값으로 기억(다른 날에도 자동으로 들어감) */
   const k = t.dataset.o, p = person(tr.dataset.pid), v = t.value.trim();
-  if ((k === "dept" || k === "work") && p && !p[k] && v && v !== "-" && !OBS_LEAVE[obsDefault(p, obsIso).code]) { p[k] = v; save(); if (p.id === cur.pid) paintPerson(); }
+  if ((k === "dept" || k === "work") && p && !p[k] && v && v !== "-" && !obsLeaveCode(v) && !OBS_LEAVE[obsDefault(p, obsIso).code]) { p[k] = v; save(); if (p.id === cur.pid) paintPerson(); }
 });
 [["obsOrg","org"],["obsWriter","writer"]].forEach(([id, k]) => $(id).addEventListener("input", e => {
   const day = obsDayRec(obsIso, true), v = e.target.value;
@@ -822,6 +864,15 @@ $("obsNext").addEventListener("click", () => obsMove(1));
 $("obsToday").addEventListener("click", () => { obsIso = todayIso(); paintObs(); });
 $("obsDate").addEventListener("change", e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) { obsIso = e.target.value; paintObs(); } });
 $("obsPanel").addEventListener("click", e => {
+  const c = e.target.closest("#obsToCal");
+  if (c) {
+    const p = person(c.dataset.pid); if (!p) return;
+    const ym = obsIso.slice(0, 7), d = +obsIso.slice(8), r = rec(ym, p.id, true);
+    if (!r.days) r.days = Object.assign({}, defDays(ym));
+    r.days[d] = c.dataset.code; if (r.src !== "사진") r.src = "직접";
+    paint(); obsNotice(ym, d, p, c.dataset.code);
+    return;
+  }
   const g = e.target.closest("#obsGo"); if (!g) return;
   obsIso = g.dataset.iso; paintObs(); $("obsStatus").textContent = "";
   $("obsPanel").scrollIntoView({behavior: "smooth", block: "start"});
