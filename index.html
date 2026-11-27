@@ -1352,19 +1352,52 @@ async function ocrCanvas(file){
   } finally { URL.revokeObjectURL(url); }
 }
 /* 인식한 글을 줄마다 나눠 합계표 줄과 날짜별 목록 줄로 읽음 */
+/* 글자 인식이 근태구분을 잘못 읽는 모양을 바로잡음(작은 캡처에서 자주 나옴. 2026-11-27 사용자 백업의 '확인 필요'에서 확인해 재현):
+   정상출근 → 청상즐근·행상줄근·성상을근·정상풀근·정상품근·정상울근·정상물근…, 근무편성 → 근무편생·큰무편성·큰무떤성·근주린성 */
+function fixOcrKind(t){
+  return String(t || "")
+    .replace(/[출츨줄술풀플즐울을품물]\s*[근군긴곤]/g, "출근")
+    .replace(/[정청점절젇행성]\s*[상싱심삼샹]/g, "정상")
+    .replace(/[근큰]\s*[무주]/g, "근무")
+    .replace(/[편떤린면펀변]\s*[성생섬셩]/g, "편성")
+    .replace(/[병벙볌뱅]\s*가/g, "병가")
+    .replace(/[연면떤언엔]\s*가/g, "연가")
+    .replace(/[교고괴]\s*[육욱]/g, "교육")
+    .replace(/특\s*[별벌볼]/g, "특별");
+}
+const OCR_KIND_WORD = /출근|정상|야간|편성|근무|연가|병가|공무|특별|특휴|휴가|교육|지각|조퇴|외출|결근|무단|이탈|휴일/;
+/* 날짜 칸을 너그럽게 읽음: 2026~11-25 → 2026-11-25, O·ㅇ→0, l·ㅣ→1. 알아볼 수 없는 글자(?)가 있으면 날짜 없음(null) */
+function ocrDate(line){
+  /* 날짜 칸은 '연도-달-날'처럼 구분 기호가 꼭 있음(합계표의 생년월일 050415 같은 숫자를 날짜로 보지 않게) */
+  const D = "[\\dOoDQㅇlI|ㅣ!?]", SEP = "[~_.:,\\-]+";
+  const re = new RegExp("^" + D + "{4,5}" + SEP + D + "{1,2}" + SEP + D + "{1,3}$");
+  const tok = String(line).split(/\s+/).find(t => (t.match(/\d/g) || []).length >= 4 && re.test(t));
+  if (!tok) return {date: null, start: -1, end: -1};
+  const start = line.indexOf(tok), end = start + tok.length;
+  const n = tok.replace(/[OoDQㅇ]/g, "0").replace(/[lI|ㅣ!]/g, "1").replace(/[~_.:,]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const m = n.match(/^(\d{4,5})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return {date: null, start, end};
+  return {date: m[1].slice(-4) + "-" + pad(+m[2]) + "-" + pad(+m[3]), start, end};
+}
+/* 인식한 글을 줄마다 나눠 합계표 줄과 날짜별 목록 줄로 읽음 */
 function parseOCR(text){
   const out = {summary:[], daily:{"":[]}};
   const KEYS = ["workdays","normal","night","annual","sick","sickDuty","absent","special"];
   const fixNum = t => t.replace(/^[ㅁoODQ]$/, "0").replace(/^[ㅣlI|\[\]!]$/, "1");
+  const rows = [];
   String(text || "").split(/\r?\n/).forEach(raw => {
     let line = raw.replace(/[줄술풀]근/g, "출근").replace(/[점절정][삼상]/g, "정상").replace(/[면떤]가/g, "연가");
-    if (/성명|근무지|복무일자/.test(line) && !/\d{4}\s*-/.test(line.replace(/생년월.|출근.수/g, ""))) return;
-    const dm = line.match(/(\d{4})\s*[-.]\s*(\d{1,2})\s*[-.]\s*(\d{1,2})(?!\d)/);
+    if (/성명|근무지|복무일자|요일|근태구분/.test(line) && !/\d{4}\s*[-~.]/.test(line.replace(/생년월.|출근.수/g, ""))) return;
+    const od = ocrDate(line);
     let left = line;
-    if (dm) {
-      left = line.slice(0, dm.index);
-      const kind = line.slice(dm.index + dm[0].length).replace(/^\s*[월화수목금토일훨급복]\s/, " ").trim();
-      out.daily[""].push({date: dm[1] + "-" + pad(+dm[2]) + "-" + pad(+dm[3]), kind: kind || "?"});
+    if (od.end >= 0) {
+      left = line.slice(0, od.start);
+      const kind = fixOcrKind(line.slice(od.end)).replace(/^\s*\S?\s+/, " ").trim();
+      if (od.date || OCR_KIND_WORD.test(kind)) rows.push({date: od.date, kind: kind || "?"});
+    } else {
+      /* 날짜를 아예 못 읽은 날짜 목록 줄: 근태 글자만 있으면 자리를 앞뒤 날짜로 채움 */
+      const k = fixOcrKind(line).trim();
+      if (!/\d{3,}/.test(k) && OCR_KIND_WORD.test(k) && k.length <= 30) rows.push({date: null, kind: k.replace(/^\S?\s+/, "")});
     }
     let toks = left.split(/\s+/).map(t => t.replace(/[_.,'"」「]/g, "")).filter(Boolean).map(fixNum);
     const fi0 = toks.findIndex(t => /^\d+$/.test(t));
@@ -1379,13 +1412,32 @@ function parseOCR(text){
     if (nums.length < 8) return;
     const o = {name: toks[ni]}; KEYS.forEach((k, i) => o[k] = Number(nums[i])); out.summary.push(o);
   });
-  /* 날짜 하나만 잘못 읽힌 경우(연도나 달 한쪽만 틀림) 목록 대부분의 달로 맞춤 */
-  const days = out.daily[""], cnt = {};
-  days.forEach(x => { const k = x.date.slice(0, 7); cnt[k] = (cnt[k] || 0) + 1; });
+  /* 목록 대부분의 달로 맞춤(연도나 달 한쪽만 틀린 날짜) */
+  const cnt = {};
+  rows.forEach(x => { if (x.date) { const k = x.date.slice(0, 7); cnt[k] = (cnt[k] || 0) + 1; } });
   const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
-  if (top) days.forEach(x => { const [y, m, d] = x.date.split("-"); const [ty, tm] = top.split("-"); if ((y === ty) !== (m === tm) && +d >= 1 && +d <= dim(top)) x.date = top + "-" + d; });
-  out.daily[""] = days.filter(x => x.date.slice(0, 7) === top && +x.date.slice(8) <= dim(top))
-    .filter((x, i, a) => a.findIndex(z => z.date === x.date) === i);
+  if (top) {
+    const [ty, tm] = top.split("-");
+    rows.forEach(x => {
+      if (!x.date) return;
+      const [y, m, d] = x.date.split("-");
+      if (y !== ty && m === tm && +d >= 1 && +d <= dim(top)) x.date = top + "-" + d;
+      if (x.date.slice(0, 7) !== top || +x.date.slice(8) < 1 || +x.date.slice(8) > dim(top)) x.date = null;
+    });
+    /* 목록은 날짜 순서대로이므로, 앞 날짜보다 작거나 같은 날짜는 잘못 읽은 것으로 봄 */
+    let last = 0;
+    rows.forEach(x => { if (!x.date) return; const d = +x.date.slice(8); if (d <= last) x.date = null; else last = d; });
+    /* 날짜를 못 읽은 줄: 앞뒤로 읽은 날짜 사이의 평일 수와 줄 수가 같으면 순서대로 채움 */
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].date) continue;
+      let j = i; while (j < rows.length && !rows[j].date) j++;
+      const a = i > 0 ? +rows[i - 1].date.slice(8) : 0, b = j < rows.length ? +rows[j].date.slice(8) : dim(top) + 1;
+      const cand = []; for (let d = a + 1; d < b; d++) if (!isHoli(top, d)) cand.push(d);
+      if (cand.length === j - i) for (let k = i; k < j; k++) rows[k].date = top + "-" + pad(cand[k - i]);
+      i = j;
+    }
+  }
+  out.daily[""] = rows.filter(x => x.date).filter((x, i, a) => a.findIndex(z => z.date === x.date) === i);
   if (!out.daily[""].length) delete out.daily[""];
   return out;
 }
@@ -1458,9 +1510,12 @@ function putForPerson(pid, rs, force){
   cur.ym = ym; cur.pid = pid; paint();
   const c = tally(daysOf(ym, pid), ym), chk = portalCheck(ym, pid);
   const parts = CODES.filter(([k]) => c[k] && k !== "휴일").map(([k, n]) => n + " " + c[k]).join(", ");
+  /* 확인 필요한 날: 무엇을 읽었는지 함께 보여 줌(못 읽은 날은 '못 읽음') */
+  const odd = [], dd = daysOf(ym, pid);
+  for (let d = 1; d <= dim(ym); d++) if (dd[d] === "확인") { const x = r.days.find(z => z.date === ym + "-" + pad(d)); odd.push(d + "일 " + (x ? "‘" + x.kind + "’" : "못 읽음")); }
   setPMsg(pid, '<span class="tag ok">넣음</span> ' + ym.replace("-", "년 ") + "월: " + esc(parts) +
     (chk ? (chk.diffs.length ? ' <span class="tag warn">포털과 다름: ' + esc(chk.diffs.join(", ")) + '</span>' : ' <span class="tag ok">포털과 같음</span>') : "") +
-    (c.확인 ? ' <span class="tag warn">확인 필요 ' + c.확인 + '일 (빨간 테두리)</span>' : "") + ' <span class="muted">· 관찰일지에도 반영</span>', false);
+    (odd.length ? ' <span class="tag warn">확인 필요: ' + esc(odd.slice(0, 5).join(", ")) + (odd.length > 5 ? " 외 " + (odd.length - 5) + "일" : "") + ' (달력 빨간 테두리)</span>' : "") + ' <span class="muted">· 관찰일지에도 반영</span>', false);
 }
 async function readForPerson(files){
   const pid = cur.pid, p = person(pid);
