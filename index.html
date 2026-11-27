@@ -241,7 +241,7 @@ details[open] > summary{margin-bottom:10px}
       <label class="f">연가·특휴 기본 사유<input type="text" id="s_reason"></label>
     </div>
     <div class="row">
-      <label class="f">관찰일지 작성자<input type="text" id="s_writer"></label>
+      <label class="f">관찰일지 작성자 (기본값)<input type="text" id="s_writer"></label>
       <label class="f">관찰일지 결재란 (쉼표로 구분)<input type="text" id="s_obsSign"></label>
     </div>
     <div class="row">
@@ -300,13 +300,18 @@ const fmtD = (ym, d) => { const [y,m] = ymParts(ym); return y+"."+pad(m)+"."+pad
 const uid = () => "p" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 
 /* ---------- 저장 ---------- */
+/* 관찰일지 작성자 기본값(2026-11-27 사용자 요청 "작성자는 기본적으로 장민석으로 넣고 수정도 가능하게") */
+const DEFAULT_WRITER = "장민석";
 function blank(){
-  return {v:1, set:{org:"",field:"",type:"주간",place:"",sign:"담당,사무국장,원장",att:"양호",reason:"개인사유",sp:true,join:false,writer:"",obsSign:"담당자,사무국장,원장"}, people:[], months:{}, obs:{}, ui:{}};
+  return {v:1, set:{org:"",field:"",type:"주간",place:"",sign:"담당,사무국장,원장",att:"양호",reason:"개인사유",sp:true,join:false,writer:DEFAULT_WRITER,writerSet:true,obsSign:"담당자,사무국장,원장"}, people:[], months:{}, obs:{}, ui:{}};
 }
 function norm(d){
   const b = blank();
   if (!d || typeof d !== "object") return b;
+  const writerSet = !!(d.set && d.set.writerSet);
   d.set = Object.assign(b.set, d.set || {});
+  /* 작성자 기본값이 생기기 전 기록: 비어 있으면 한 번만 기본값으로 채움(나중에 사용자가 지우면 그대로 둠) */
+  if (!writerSet) { if (!d.set.writer) d.set.writer = DEFAULT_WRITER; d.set.writerSet = true; }
   d.people = Array.isArray(d.people) ? d.people.filter(p => p && p.id) : [];
   d.months = d.months && typeof d.months === "object" ? d.months : {};
   d.ui = d.ui && typeof d.ui === "object" ? d.ui : {};
@@ -855,6 +860,21 @@ $("obsTable").addEventListener("change", e => {
   if (!Object.keys(day.rows).length && day.org == null && day.writer == null) delete db.obs[obsIso];
   save(); if ($("obsPrevBox").open) obsPreviewSoon();
 }));
+/* 작성자를 그날만 바꾸면, 앞으로 모든 날의 기본값으로 할지 묻는 단추 */
+$("obsWriter").addEventListener("change", e => {
+  const v = e.target.value.trim(), st = $("obsStatus");
+  if (!v || v === (db.set.writer || "")) return;
+  st.innerHTML = "이 날 작성자를 ‘" + esc(v) + "’" + ro(v) + " 바꿨습니다. " + '<button type="button" class="sm" id="obsWriterDef">앞으로 모든 날 ‘' + esc(v) + '’' + ro(v) + ' 하기</button>';
+  st.className = "status";
+});
+$("obsPanel").addEventListener("click", e => {
+  if (e.target.id !== "obsWriterDef") return;
+  const v = $("obsWriter").value.trim(); if (!v) return;
+  db.set.writer = v; $("s_writer").value = v;
+  const day = obsDayRec(obsIso); if (day) { delete day.writer; if (!Object.keys(day.rows).length && day.org == null) delete db.obs[obsIso]; }
+  save(); paintObs();
+  $("obsStatus").textContent = "작성자 기본값을 ‘" + v + "’" + ro(v) + " 바꿨습니다. 이미 따로 고친 날은 그대로입니다."; $("obsStatus").className = "status";
+});
 function obsMove(step){
   const [y, m, d] = obsIso.split("-").map(Number), t = new Date(y, m - 1, d + step);
   obsIso = t.getFullYear() + "-" + pad(t.getMonth() + 1) + "-" + pad(t.getDate()); paintObs();
